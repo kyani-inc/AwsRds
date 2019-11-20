@@ -20,7 +20,7 @@ func TestRegisterCluster(t *testing.T) {
 		t.Error(err)
 	}
 
-	db := DB("au-bi-151012-cluster", "Falu", false)
+	db := DB("au-bi-151012-cluster", "Interrupt", false)
 
 	if db != nil {
 		rows, err = db.Query("Select * from Interrupt")
