@@ -1,4 +1,4 @@
-module github.com/catmullet/AwsRds
+module github.com/kyani-inc/AwsRds
 
 go 1.12
 
