@@ -14,17 +14,21 @@ import (
 
 var sess *session.Session
 var rdsClient *rds.RDS
-var RegisteredDbMap map[string]*sql.DB
-var RegisteredDbDsnMap map[string]string
+var Databases DBS
+
+type DBS struct {
+	RegisteredDbMap    map[string]*sql.DB
+	RegisteredDbDsnMap map[string]string
+}
 
 func init() {
 
-	if RegisteredDbMap == nil {
-		RegisteredDbMap = make(map[string]*sql.DB)
+	if Databases.RegisteredDbMap == nil {
+		Databases.RegisteredDbMap = make(map[string]*sql.DB)
 	}
 
-	if RegisteredDbDsnMap == nil {
-		RegisteredDbDsnMap = make(map[string]string)
+	if Databases.RegisteredDbDsnMap == nil {
+		Databases.RegisteredDbDsnMap = make(map[string]string)
 	}
 
 	sess = session.Must(session.NewSessionWithOptions(session.Options{
@@ -34,42 +38,48 @@ func init() {
 	rdsClient = rds.New(sess)
 }
 
-func DB(clusterName, database string, write bool) (db *sql.DB) {
+func DB(clusterName, database string, write bool) *sql.DB {
 	if write {
-		if db, ok := RegisteredDbMap[fmt.Sprintf("%s-%s__writer", clusterName, database)]; ok {
+		db, ok := Databases.RegisteredDbMap[fmt.Sprintf("%s-%s__writer", clusterName, database)]
+		if ok {
 			err := db.Ping()
 			if err != nil {
 				log.Println("[error] write DB connection closed, attempting reopen...", err)
-				db, err = createConnectionFromDsn(RegisteredDbDsnMap[fmt.Sprintf("%s-%s__writer", clusterName, database)])
+				db, err = createConnectionFromDsn(Databases.RegisteredDbDsnMap[fmt.Sprintf("%s-%s__writer", clusterName, database)])
 			}
 
 			if db.Stats().OpenConnections == db.Stats().MaxOpenConnections {
 				err := errors.New("Too many connections open")
 				log.Println("[error] Too many connections open on the write DB", err, db.Stats())
 			}
+
+			return db
 		}
 	} else {
-		if db, ok := RegisteredDbMap[fmt.Sprintf("%s-%s__reader", clusterName, database)]; ok {
+		dbReader, ok := Databases.RegisteredDbMap[fmt.Sprintf("%s-%s__reader", clusterName, database)]
 
-			err := db.Ping()
+		if ok {
+			err := dbReader.Ping()
 			if err != nil {
 				log.Println("[error] read DB connection closed, attempting reopen...", err)
-				db, err = createConnectionFromDsn(RegisteredDbDsnMap[fmt.Sprintf("%s-%s__writer", clusterName, database)])
+				dbReader, err = createConnectionFromDsn(Databases.RegisteredDbDsnMap[fmt.Sprintf("%s-%s__writer", clusterName, database)])
 			}
 
-			if db.Stats().OpenConnections == db.Stats().MaxOpenConnections {
+			if dbReader.Stats().OpenConnections == dbReader.Stats().MaxOpenConnections {
 				err := errors.New("Too many connections open")
-				log.Println("[error] Too many connections open on the read DB", err, db.Stats())
+				log.Println("[error] Too many connections open on the read DB", err, dbReader.Stats())
 			}
+
+			return dbReader
 		}
 	}
 
-	return
+	return nil
 }
 
 func Query(clusterName, database, query string, args ...interface{}) (rows *sql.Rows, err error) {
 	if isWriteRequred(query) {
-		if db, ok := RegisteredDbMap[fmt.Sprintf("%s-%s__writer", clusterName, database)]; ok {
+		if db, ok := Databases.RegisteredDbMap[fmt.Sprintf("%s-%s__writer", clusterName, database)]; ok {
 			rows, err = db.Query(query, args...)
 
 			if err != nil {
@@ -84,7 +94,7 @@ func Query(clusterName, database, query string, args ...interface{}) (rows *sql.
 				err = db.Ping()
 				if err != nil {
 					log.Println("[error] write DB connection closed, attempting reopen...", err)
-					db, err = createConnectionFromDsn(RegisteredDbDsnMap[fmt.Sprintf("%s-%s__writer", clusterName, database)])
+					db, err = createConnectionFromDsn(Databases.RegisteredDbDsnMap[fmt.Sprintf("%s-%s__writer", clusterName, database)])
 
 					if err != nil {
 						log.Println("[error] Failed to restablish connection", err)
@@ -96,7 +106,7 @@ func Query(clusterName, database, query string, args ...interface{}) (rows *sql.
 			}
 		}
 	} else {
-		if db, ok := RegisteredDbMap[fmt.Sprintf("%s-%s__reader", clusterName, database)]; ok {
+		if db, ok := Databases.RegisteredDbMap[fmt.Sprintf("%s-%s__reader", clusterName, database)]; ok {
 			rows, err = db.Query(query, args...)
 
 			if err != nil {
@@ -111,7 +121,7 @@ func Query(clusterName, database, query string, args ...interface{}) (rows *sql.
 				err = db.Ping()
 				if err != nil {
 					log.Println("[error] read DB connection closed, attempting reopen...", err)
-					db, err = createConnectionFromDsn(RegisteredDbDsnMap[fmt.Sprintf("%s-%s__writer", clusterName, database)])
+					db, err = createConnectionFromDsn(Databases.RegisteredDbDsnMap[fmt.Sprintf("%s-%s__writer", clusterName, database)])
 					if err != nil {
 						log.Println("[error] Failed to restablish connection", err)
 						return
@@ -165,12 +175,12 @@ func RegisterCluster(clusterName, database, username, password string) (err erro
 
 			if strings.ToLower(*instance.EndpointType) == "writer" {
 				mapKey := fmt.Sprintf("%s-%s__writer", clusterName, database)
-				RegisteredDbMap[mapKey] = db
-				RegisteredDbDsnMap[mapKey] = dsn
+				Databases.RegisteredDbMap[mapKey] = db
+				Databases.RegisteredDbDsnMap[mapKey] = dsn
 			} else {
 				mapKey := fmt.Sprintf("%s-%s__reader", clusterName, database)
-				RegisteredDbMap[mapKey] = db
-				RegisteredDbDsnMap[mapKey] = dsn
+				Databases.RegisteredDbMap[mapKey] = db
+				Databases.RegisteredDbDsnMap[mapKey] = dsn
 			}
 		}
 	}
