@@ -4,12 +4,14 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
+	"strings"
+
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/rds"
 	_ "github.com/go-sql-driver/mysql"
-	"log"
-	"strings"
+	"github.com/jinzhu/gorm"
 )
 
 var sess *session.Session
@@ -17,14 +19,14 @@ var rdsClient *rds.RDS
 var Databases DBS
 
 type DBS struct {
-	RegisteredDbMap    map[string]*sql.DB
+	RegisteredDbMap    map[string]*gorm.DB
 	RegisteredDbDsnMap map[string]string
 }
 
 func init() {
 
 	if Databases.RegisteredDbMap == nil {
-		Databases.RegisteredDbMap = make(map[string]*sql.DB)
+		Databases.RegisteredDbMap = make(map[string]*gorm.DB)
 	}
 
 	if Databases.RegisteredDbDsnMap == nil {
@@ -38,19 +40,19 @@ func init() {
 	rdsClient = rds.New(sess)
 }
 
-func DB(clusterName, database string, write bool) *sql.DB {
+func GormDB(clusterName, database string, write bool) *gorm.DB {
 	if write {
 		db, ok := Databases.RegisteredDbMap[fmt.Sprintf("%s-%s__writer", clusterName, database)]
 		if ok {
-			err := db.Ping()
+			err := db.DB().Ping()
 			if err != nil {
 				log.Println("[error] write DB connection closed, attempting reopen...", err)
 				db, err = createConnectionFromDsn(Databases.RegisteredDbDsnMap[fmt.Sprintf("%s-%s__writer", clusterName, database)])
 			}
 
-			if db.Stats().OpenConnections == db.Stats().MaxOpenConnections {
+			if db.DB().Stats().OpenConnections == db.DB().Stats().MaxOpenConnections {
 				err := errors.New("Too many connections open")
-				log.Println("[error] Too many connections open on the write DB", err, db.Stats())
+				log.Println("[error] Too many connections open on the write DB", err, db.DB().Stats())
 			}
 
 			return db
@@ -59,15 +61,15 @@ func DB(clusterName, database string, write bool) *sql.DB {
 		dbReader, ok := Databases.RegisteredDbMap[fmt.Sprintf("%s-%s__reader", clusterName, database)]
 
 		if ok {
-			err := dbReader.Ping()
+			err := dbReader.DB().Ping()
 			if err != nil {
 				log.Println("[error] read DB connection closed, attempting reopen...", err)
 				dbReader, err = createConnectionFromDsn(Databases.RegisteredDbDsnMap[fmt.Sprintf("%s-%s__writer", clusterName, database)])
 			}
 
-			if dbReader.Stats().OpenConnections == dbReader.Stats().MaxOpenConnections {
+			if dbReader.DB().Stats().OpenConnections == dbReader.DB().Stats().MaxOpenConnections {
 				err := errors.New("Too many connections open")
-				log.Println("[error] Too many connections open on the read DB", err, dbReader.Stats())
+				log.Println("[error] Too many connections open on the read DB", err, dbReader.DB().Stats())
 			}
 
 			return dbReader
@@ -77,21 +79,25 @@ func DB(clusterName, database string, write bool) *sql.DB {
 	return nil
 }
 
+func DB(clusterName, database string, write bool) *sql.DB {
+	return GormDB(clusterName, database, write).DB()
+}
+
 func Query(clusterName, database, query string, args ...interface{}) (rows *sql.Rows, err error) {
 	if isWriteRequred(query) {
 		if db, ok := Databases.RegisteredDbMap[fmt.Sprintf("%s-%s__writer", clusterName, database)]; ok {
-			rows, err = db.Query(query, args...)
+			rows, err = db.DB().Query(query, args...)
 
 			if err != nil {
-				log.Println("[error] Failed to attempt write query on DB", query, db.Stats())
+				log.Println("[error] Failed to attempt write query on DB", query, db.DB().Stats())
 
-				if db.Stats().OpenConnections == db.Stats().MaxOpenConnections {
+				if db.DB().Stats().OpenConnections == db.DB().Stats().MaxOpenConnections {
 					err = errors.New("Too many connections open")
-					log.Println("[error] Too many connections open on the write DB", err, db.Stats())
+					log.Println("[error] Too many connections open on the write DB", err, db.DB().Stats())
 					return
 				}
 
-				err = db.Ping()
+				err = db.DB().Ping()
 				if err != nil {
 					log.Println("[error] write DB connection closed, attempting reopen...", err)
 					db, err = createConnectionFromDsn(Databases.RegisteredDbDsnMap[fmt.Sprintf("%s-%s__writer", clusterName, database)])
@@ -101,33 +107,33 @@ func Query(clusterName, database, query string, args ...interface{}) (rows *sql.
 						return
 					}
 
-					rows, err = db.Query(query, args...)
+					rows, err = db.DB().Query(query, args...)
 				}
 			}
 		}
 	} else {
 		if db, ok := Databases.RegisteredDbMap[fmt.Sprintf("%s-%s__reader", clusterName, database)]; ok {
-			rows, err = db.Query(query, args...)
+			rows, err = db.DB().Query(query, args...)
 
 			if err != nil {
-				log.Println("[error] Failed to attempt read query on DB", query, db.Stats())
+				log.Println("[error] Failed to attempt read query on DB", query, db.DB().Stats())
 
-				if db.Stats().OpenConnections == db.Stats().MaxOpenConnections {
+				if db.DB().Stats().OpenConnections == db.DB().Stats().MaxOpenConnections {
 					err = errors.New("Too many connections open")
-					log.Println("[error] Too many connections open on the read DB", err, db.Stats())
+					log.Println("[error] Too many connections open on the read DB", err, db.DB().Stats())
 					return
 				}
 
-				err = db.Ping()
+				err = db.DB().Ping()
 				if err != nil {
 					log.Println("[error] read DB connection closed, attempting reopen...", err)
-					db, err = createConnectionFromDsn(Databases.RegisteredDbDsnMap[fmt.Sprintf("%s-%s__writer", clusterName, database)])
+					db, err = createConnectionFromDsn(Databases.RegisteredDbDsnMap[fmt.Sprintf("%s-%s__reader", clusterName, database)])
 					if err != nil {
 						log.Println("[error] Failed to restablish connection", err)
 						return
 					}
 
-					rows, err = db.Query(query, args...)
+					rows, err = db.DB().Query(query, args...)
 				}
 			}
 		}
@@ -188,14 +194,14 @@ func RegisterCluster(clusterName, database, username, password string) (err erro
 	return
 }
 
-func createConnection(endpoint, database, username, password string) (db *sql.DB, dsn string, err error) {
+func createConnection(endpoint, database, username, password string) (db *gorm.DB, dsn string, err error) {
 	dsn = createDsn(endpoint, database, username, password)
-	db, err = sql.Open("mysql", dsn)
+	db, err = gorm.Open("mysql", dsn)
 	return
 }
 
-func createConnectionFromDsn(dsn string) (db *sql.DB, err error) {
-	db, err = sql.Open("mysql", dsn)
+func createConnectionFromDsn(dsn string) (db *gorm.DB, err error) {
+	db, err = gorm.Open("mysql", dsn)
 	return
 }
 
