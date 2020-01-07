@@ -4,12 +4,13 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
+	"strings"
+
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/rds"
 	_ "github.com/go-sql-driver/mysql"
-	"log"
-	"strings"
 )
 
 var sess *session.Session
@@ -121,7 +122,7 @@ func Query(clusterName, database, query string, args ...interface{}) (rows *sql.
 				err = db.Ping()
 				if err != nil {
 					log.Println("[error] read DB connection closed, attempting reopen...", err)
-					db, err = createConnectionFromDsn(Databases.RegisteredDbDsnMap[fmt.Sprintf("%s-%s__writer", clusterName, database)])
+					db, err = createConnectionFromDsn(Databases.RegisteredDbDsnMap[fmt.Sprintf("%s-%s__reader", clusterName, database)])
 					if err != nil {
 						log.Println("[error] Failed to restablish connection", err)
 						return
@@ -200,5 +201,5 @@ func createConnectionFromDsn(dsn string) (db *sql.DB, err error) {
 }
 
 func createDsn(endpoint, database, username, password string) string {
-	return fmt.Sprintf("%s:%s@tcp(%s:3306)/%s", username, password, endpoint, database)
+	return fmt.Sprintf("%s:%s@tcp(%s:3306)/%s?collation=utf8_general_ci&parseTime=true", username, password, endpoint, database)
 }
